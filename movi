@@ -1,0 +1,25 @@
+#!/bin/bash
+# ============================================================
+#  MOVIVIP · GESTOR SSH
+#  Lanzador principal. El comando instalado es:  movi
+# ============================================================
+set -u
+
+MOVI_SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+MOVI_DIR="$(cd -- "$(dirname -- "$MOVI_SELF")" && pwd)"
+export MOVI_SELF MOVI_DIR
+
+# Rutas fijadas por install.sh (si existen). El entorno tiene prioridad.
+# shellcheck source=/dev/null
+[[ -r "$MOVI_DIR/lib/paths.sh" ]] && source "$MOVI_DIR/lib/paths.sh"
+
+# shellcheck source=lib/common.sh
+source "$MOVI_DIR/lib/common.sh"
+# shellcheck source=lib/accounts.sh
+source "$MOVI_DIR/lib/accounts.sh"
+# shellcheck source=lib/menu.sh
+source "$MOVI_DIR/lib/menu.sh"
+# shellcheck source=lib/cli.sh
+source "$MOVI_DIR/lib/cli.sh"
+
+movi_main "$@"
