@@ -131,6 +131,10 @@ CONEXIONES_DEFECTO=0
 # 0 = solo medir, nunca bloquear.
 BLOQUEAR_AL_EXCEDER=1
 
+# 1 = cortar las conexiones que superen el límite simultáneo (movi edit --conns).
+# 0 = solo mostrar el límite, nunca cortar.
+CORTAR_EXCESO_CONEXIONES=1
+
 # Shell de las cuentas creadas.
 SHELL_USUARIO=/bin/bash
 

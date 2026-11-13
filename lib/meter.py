@@ -15,6 +15,10 @@ Uso:
     meter.py --forget USER          Borra al usuario del estado
     meter.py --status               Resumen clave=valor del estado
 
+Las sesiones se reconocen vía sshd (puerto 22) y vía dropbear (puerto 90,
+tunnel del panel MoviVIP). Con CORTAR_EXCESO_CONEXIONES=1 se terminan las
+conexiones que superen el límite simultáneo del usuario.
+
 Para pruebas o depuración se puede alimentar la entrada con archivos:
     --ss-file FILE --listen-file FILE --ps-file FILE
 """
@@ -35,6 +39,12 @@ from typing import Optional
 
 
 SSHD = {"sshd", "sshd-session"}
+# El panel MoviVIP entra por dropbear (puerto 90), no por sshd:22. Ambos
+# daemones son válidos como dueño de una sesión medible.
+DROPBEAR = {"dropbear"}
+DAEMONS = SSHD | DROPBEAR
+# Cuentas de sistema: nunca se atribuye tráfico a estas.
+SYSTEM_ACCOUNTS = {"root", "sshd", "nobody", "daemon", "syslog", "dropbear"}
 OWNER = re.compile(r'\("([^"]+)",pid=(\d+),fd=(\d+)\)')
 COOKIE = re.compile(r"\bsk:([0-9a-f]+)\b")
 NUMBERS = re.compile(r"\b(bytes_acked|bytes_received):(\d+)\b")
@@ -67,6 +77,7 @@ ETC = Path(_env("MOVI_ETC", "/etc/movi-ssh"))
 STATE = Path(_env("MOVI_STATE", "/var/lib/movi-ssh"))
 PASSWD = Path(_env("MOVI_PASSWD", "/etc/passwd"))
 LIMITS = ETC / "limites_consumo.conf"
+CONNS = ETC / "limites_conexiones.conf"
 SUSPEND = ETC / "suspendidos.conf"
 CONFIG = ETC / "config.conf"
 
@@ -127,6 +138,11 @@ def enforcement_enabled():
     return value not in {"0", "no", "off", "false", "nunca"}
 
 
+def connections_enabled():
+    value = config().get("CORTAR_EXCESO_CONEXIONES", "1").lower()
+    return value not in {"0", "no", "off", "false", "nunca"}
+
+
 # ── Parseo de ss ───────────────────────────────────────────
 def endpoint(value):
     host, _, port = value.rpartition(":")
@@ -170,8 +186,30 @@ def tcp_rows(text, listening=False):
 
 
 # ── Parseo de ps ───────────────────────────────────────────
+def _cuenta_propia(account):
+    return bool(USERNAME.fullmatch(account)) and account not in SYSTEM_ACCOUNTS
+
+
+def _primero_debajo(pid, own_account, result, children):
+    """Primer proceso con cuenta propia bajo el proceso de sesión dropbear."""
+    if _cuenta_propia(own_account):
+        return own_account
+    queue = list(children.get(pid, []))
+    seen = set()
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        account = result[current][1]
+        if _cuenta_propia(account):
+            return account
+        queue.extend(children.get(current, []))
+    return None
+
+
 def processes(text):
-    """Devuelve {pid: usuario} para procesos de sesión sshd."""
+    """Devuelve {pid: usuario} para procesos de sesión sshd y dropbear."""
     result = {}
     users = {}
     for row in text.splitlines():
@@ -191,6 +229,19 @@ def processes(text):
             (f"sshd: {name} ", f"sshd-session: {name} ")
         ):
             users[parent] = name
+    # dropbear: el proceso hijo de otro dropbear es una sesión; su usuario es
+    # la primera cuenta propia que aparece debajo (el shell de la sesión).
+    children = {}
+    for pid, (parent, _account, _command, _args) in result.items():
+        children.setdefault(parent, []).append(pid)
+    for pid, (parent, account, command, _args) in result.items():
+        if command not in DROPBEAR:
+            continue
+        if result.get(parent, ("", "", ""))[2] not in DROPBEAR:
+            continue  # es el listener, no una sesión
+        name = _primero_debajo(pid, account, result, children)
+        if name:
+            users[pid] = name
     return users
 
 
@@ -225,29 +276,58 @@ def ss_table(kind, args):
     return run(argv)
 
 
-def sample(args):
-    """Devuelve {cookie: (usuario, bytes)} de la muestra actual."""
+def attributed(args):
+    """Filas (cookie, usuario, [pid_dueño], bytes) de la muestra actual."""
     users = processes(ps_table(args))
     connections = list(tcp_rows(ss_table("est", args)))
     listening = list(tcp_rows(ss_table("listen", args), listening=True))
-    ssh_ports = {c.local[1] for c in listening if any(n in SSHD for n, _, _ in c.owners)} or {22}
+    ssh_ports = {c.local[1] for c in listening if any(n in DAEMONS for n, _, _ in c.owners)} or {22}
 
-    meters = {}
+    rows = []
     for conn in connections:
         if not conn.cookie or conn.measured is None:
             continue
-        names = {
-            users[pid]
+        owners = [
+            (name, pid)
             for name, pid, _ in conn.owners
-            if name in SSHD and pid in users and conn.local[1] in ssh_ports
-        }
+            if name in DAEMONS and pid in users and conn.local[1] in ssh_ports
+        ]
+        names = {users[pid] for _name, pid in owners}
         if len(names) != 1:
             continue
-        name = next(iter(names))
-        previous = meters.get(conn.cookie)
-        if previous is None or (previous[0] == name and conn.measured >= previous[1]):
-            meters[conn.cookie] = (name, conn.measured)
+        rows.append((conn.cookie, next(iter(names)), [int(pid) for _n, pid in owners], conn.measured))
+    return rows
+
+
+def meters_from(rows):
+    """Devuelve {cookie: (usuario, bytes)} de la muestra actual."""
+    meters = {}
+    for cookie, name, _pids, measured in rows:
+        previous = meters.get(cookie)
+        if previous is None or (previous[0] == name and measured >= previous[1]):
+            meters[cookie] = (name, measured)
     return meters
+
+
+def sessions_from(rows):
+    """Devuelve {usuario: [(pid, cookie), ...]} — un pid = una conexión."""
+    per_user = {}
+    seen = set()
+    for cookie, name, pids, _measured in rows:
+        for pid in pids:
+            if (name, pid) in seen:
+                continue
+            seen.add((name, pid))
+            per_user.setdefault(name, []).append((pid, cookie))
+    return per_user
+
+
+def sample(args):
+    return meters_from(attributed(args))
+
+
+def sessions(args):
+    return sessions_from(attributed(args))
 
 
 # ── Estado acumulado ───────────────────────────────────────
@@ -316,6 +396,22 @@ def limits():
     data = {}
     try:
         for line in LIMITS.read_text(errors="replace").splitlines():
+            if "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            name, value = name.strip(), value.strip()
+            if USERNAME.fullmatch(name) and value.isdigit():
+                data[name] = int(value)
+    except OSError:
+        pass
+    return data
+
+
+def connection_limits():
+    """Límite de conexiones simultáneas por usuario (0 = sin límite)."""
+    data = {}
+    try:
+        for line in CONNS.read_text(errors="replace").splitlines():
             if "=" not in line:
                 continue
             name, value = line.split("=", 1)
@@ -401,6 +497,41 @@ def enforce(totals):
     return actions
 
 
+def cut_connections(active):
+    """Termina las conexiones que superan el límite simultáneo.
+
+    `active` es {usuario: [(pid, cookie), ...]} — un pid = una conexión. Se
+    conservan las más antiguas (menor pid dentro de un arranque; desempate por
+    la última muestra guardada del socket) y el resto recibe SIGTERM.
+    """
+    if not connections_enabled():
+        return []
+    conn_limits = connection_limits()
+    if not conn_limits:
+        return []
+    sockets = load_state().get("sockets") or {}
+    actions = []
+    for name in sorted(active):
+        limit = conn_limits.get(name, 0)
+        if limit <= 0 or name == "root":
+            continue
+        entries = active[name]
+        if len(entries) <= limit:
+            continue
+
+        def age(entry):
+            pid, cookie = entry
+            value = sockets.get(cookie)
+            # Un socket nunca visto es la conexión más nueva: se corta antes.
+            seen = value[2] if isinstance(value, list) and len(value) == 3 else float("inf")
+            return (float(seen), int(pid))
+
+        for pid, _cookie in sorted(entries, key=age)[limit:]:
+            rc, _ = exec_cmd(["kill", "-TERM", str(pid)])
+            actions.append(("cortada" if rc == 0 else "corte_fallido", name, len(entries), limit))
+    return actions
+
+
 # ── Comandos ───────────────────────────────────────────────
 def human(number):
     if number is None:
@@ -414,9 +545,11 @@ def human(number):
 
 
 def cmd_collect(args, do_enforce=True):
-    meters = sample(args)
-    totals = accumulate(meters)
-    actions = enforce(totals) if do_enforce else []
+    rows = attributed(args)
+    totals = accumulate(meters_from(rows))
+    actions = []
+    if do_enforce:
+        actions = enforce(totals) + cut_connections(sessions_from(rows))
     for action, name, used, limit in actions:
         print(f"{action}|{name}|{used}|{limit}")
     return 0
@@ -508,7 +641,8 @@ def main(argv=None):
     if args.collect:
         return cmd_collect(args, do_enforce=not args.no_enforce)
     if args.enforce:
-        for action, name, used, limit in enforce(usage_map()):
+        actions = enforce(usage_map()) + cut_connections(sessions(args))
+        for action, name, used, limit in actions:
             print(f"{action}|{name}|{used}|{limit}")
         return 0
     if args.usage is not None:

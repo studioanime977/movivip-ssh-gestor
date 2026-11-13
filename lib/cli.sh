@@ -17,7 +17,9 @@ COMANDOS
       --pass CLAVE              Contraseña (si falta, se genera o se pregunta)
       --days N                  Días de vigencia (0 = sin límite)   [30]
       --gb N                    Consumo máximo en GB (0 = ilimitado) [0]
-      --conns N                 Conexiones simultáneas (0 = ilimitado) [0]
+      --conns N                 Conexiones simultáneas (0 = ilimitado) [0].
+                                Al superarlo se cortan las más recientes
+                                si CORTAR_EXCESO_CONEXIONES=1.
       --random                  Genera usuario y contraseña aleatorios
 
   del USUARIO [--keep-home] [--yes]
@@ -282,6 +284,7 @@ movi_cmd_status() {
         printf '%-16s %s\n' "ultima_muestra" "sin datos"
     fi
     printf '%-16s %s\n' "bloqueo_auto" "$BLOQUEAR_AL_EXCEDER"
+    printf '%-16s %s\n' "corte_conexiones" "$CORTAR_EXCESO_CONEXIONES"
 }
 
 # ── Entrada principal ───────────────────────────────────────

@@ -67,6 +67,7 @@ DIAS_DEFECTO=30
 GB_DEFECTO=0
 CONEXIONES_DEFECTO=0
 BLOQUEAR_AL_EXCEDER=1
+CORTAR_EXCESO_CONEXIONES=1
 SHELL_USUARIO=/bin/bash
 PUERTO_SSH=22
 IP_PUBLICA=10.10.10.10
@@ -191,6 +192,12 @@ echo "pkill $*" >> "$STUB_DIR/log/pkill"
 exit 0
 STUB
 
+cat > "$TMP/bin/kill" <<'STUB'
+#!/bin/bash
+echo "kill $*" >> "$STUB_DIR/log/kill"
+exit 0
+STUB
+
 cat > "$TMP/bin/id" <<'STUB'
 #!/bin/bash
 user="${!#}"
@@ -250,6 +257,7 @@ done
 if "$MOVI_PYTHON" -m py_compile "$SRC/lib/meter.py" 2>/dev/null; then ok "python compila"; else bad "python compila"; fi
 assert_contains "medidor cada 15 s en el instalador" "$(cat "$SRC/install.sh")" "OnUnitActiveSec=15s"
 assert_not_contains "sin restos del antiguo intervalo de 60 s" "$(cat "$SRC/install.sh")" "OnUnitActiveSec=60s"
+assert_contains "instalador define corte de conexiones" "$(cat "$SRC/install.sh")" "CORTAR_EXCESO_CONEXIONES=1"
 
 # ── 2. Comandos básicos ─────────────────────────────────────
 echo
@@ -398,6 +406,7 @@ salida="$(M status 2>&1)"
 assert_contains "status muestra versión" "$salida" "version"
 assert_contains "status muestra medidor" "$salida" "medidor"
 assert_contains "status muestra bloqueo_auto" "$salida" "bloqueo_auto"
+assert_contains "status muestra corte_conexiones" "$salida" "corte_conexiones"
 
 # ── 11. Instalador en rutas temporales ──────────────────────
 echo
@@ -452,6 +461,119 @@ despues="$(awk -F: '$3 >= 1000 && $3 < 65534 && $1 != "nobody"' "$MOVI_PASSWD" |
 assert_rc "menú: alta aleatoria rc=0" "$?" 0
 assert_eq "menú: alta aleatoria crea un usuario" "$despues" "$((antes + 1))"
 assert_contains "menú: muestra credenciales generadas" "$salida" "Contrasena"
+
+# ── 13. Sesiones por dropbear (tunnel del panel) ─────────────
+echo
+echo "13) Medición de sesiones dropbear (puerto 90 / panel)"
+M add drop1 --pass 'Clave123!' --days 30 --gb 0 --conns 2 >/dev/null 2>&1
+assert_rc "drop1 creada" "$?" 0
+# Una directa (cliente:90) y otra del panel (loopback python<->dropbear:90);
+# el lado del panel (python) no debe sumar dos veces.
+cat > "$TMP/ss_est.txt" <<'EOF'
+0 0 10.0.0.5:90 5.6.7.8:40000 users:(("dropbear",pid=300,fd=6)) uid:0 ino:9 sk:aaa90a
+	 ts sack cubic bytes_acked:1000 bytes_received:500
+0 0 127.0.0.1:90 127.0.0.1:60290 users:(("dropbear",pid=302,fd=6)) ino:10 sk:bbb90b
+	 ts sack cubic bytes_acked:400 bytes_received:600
+0 0 127.0.0.1:60290 127.0.0.1:90 users:(("python",pid=108719,fd=162)) ino:11 sk:ccc90c
+	 ts sack cubic bytes_acked:999999 bytes_received:999999
+EOF
+cat > "$TMP/ss_listen.txt" <<'EOF'
+LISTEN 0 1000 0.0.0.0:90 0.0.0.0:* users:(("dropbear",pid=10687,fd=3))
+LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))
+EOF
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+10687 1 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+300 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+301 300 drop1 bash -bash
+302 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+303 302 drop1 bash -bash
+EOF
+muestra >/dev/null 2>&1
+assert_eq "dropbear: bytes medidos (1500 + 1000)" "$(MET --usage-bytes drop1)" "2500"
+assert_not_contains "dropbear: el lado del panel no se suma" "$(MET --usage-bytes drop1)" "999999"
+salida="$(MET --dump --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_contains "dropbear: dump con 2 conexiones" "$salida" "drop1|2500|2"
+salida="$(MET --online --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_eq "dropbear: online 2 sesiones" "$salida" "drop1|2"
+
+# Sesión dropbear sin shell vivo (solo el TCP que mantiene el panel): no se
+# atribuye tráfico.
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+10687 1 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+300 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+302 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+EOF
+salida="$(MET --online --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_eq "dropbear sin shell: sin atribución" "$salida" ""
+
+# ── 14. Corte real de conexiones simultáneas ────────────────
+echo
+echo "14) Corte real de conexiones simultáneas"
+M add lim1 --pass 'Clave123!' --days 30 --gb 0 --conns 1 >/dev/null 2>&1
+assert_rc "lim1 creada (1 conexión)" "$?" 0
+cat > "$TMP/ss_listen.txt" <<'EOF'
+LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))
+EOF
+cat > "$TMP/ss_est.txt" <<'EOF'
+0 0 10.0.0.5:22 1.2.3.4:51000 users:(("sshd",pid=500,fd=4)) uid:0 ino:1 sk:a11a1
+	 ts sack cubic bytes_acked:100 bytes_received:100
+0 0 10.0.0.5:22 1.2.3.5:51001 users:(("sshd",pid=600,fd=4)) uid:0 ino:2 sk:a11a2
+	 ts sack cubic bytes_acked:100 bytes_received:100
+EOF
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+500 100 lim1 sshd sshd: lim1@pts/0
+600 100 lim1 sshd sshd: lim1@pts/1
+EOF
+rm -f "$STUB_DIR/log/kill"
+salida="$(muestra 2>&1)"
+assert_contains "corte anunciado (2 activas, límite 1)" "$salida" "cortada|lim1|2|1"
+assert_contains "se corta la conexión más nueva (pid 600)" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 600"
+assert_not_contains "se conserva la más antigua (pid 500)" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 500"
+
+# --enforce solo también corta.
+rm -f "$STUB_DIR/log/kill"
+salida="$(MET --enforce --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt" 2>&1)"
+assert_contains "--enforce también corta" "$salida" "cortada|lim1|2|1"
+assert_contains "--enforce envía SIGTERM" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 600"
+
+# Con una sola conexión no se corta nada.
+cat > "$TMP/ss_est.txt" <<'EOF'
+0 0 10.0.0.5:22 1.2.3.4:51000 users:(("sshd",pid=500,fd=4)) uid:0 ino:1 sk:a11a1
+	 ts sack cubic bytes_acked:100 bytes_received:100
+EOF
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+500 100 lim1 sshd sshd: lim1@pts/0
+EOF
+rm -f "$STUB_DIR/log/kill"
+muestra >/dev/null 2>&1
+assert_no_file "sin corte con una sola conexión" "$STUB_DIR/log/kill"
+
+# CORTAR_EXCESO_CONEXIONES=0 desactiva el corte.
+cat > "$TMP/ss_est.txt" <<'EOF'
+0 0 10.0.0.5:22 1.2.3.4:51000 users:(("sshd",pid=500,fd=4)) uid:0 ino:1 sk:a11a1
+	 ts sack cubic bytes_acked:100 bytes_received:100
+0 0 10.0.0.5:22 1.2.3.5:51001 users:(("sshd",pid=600,fd=4)) uid:0 ino:2 sk:a11a2
+	 ts sack cubic bytes_acked:100 bytes_received:100
+EOF
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+500 100 lim1 sshd sshd: lim1@pts/0
+600 100 lim1 sshd sshd: lim1@pts/1
+EOF
+sed -i 's/^CORTAR_EXCESO_CONEXIONES=1$/CORTAR_EXCESO_CONEXIONES=0/' "$MOVI_ETC/config.conf"
+rm -f "$STUB_DIR/log/kill"
+muestra >/dev/null 2>&1
+assert_no_file "corte desactivado por configuración" "$STUB_DIR/log/kill"
+sed -i 's/^CORTAR_EXCESO_CONEXIONES=0$/CORTAR_EXCESO_CONEXIONES=1/' "$MOVI_ETC/config.conf"
+
+M del drop1 --yes >/dev/null 2>&1
+assert_rc "drop1 eliminada sin errores" "$?" 0
+M del lim1 --yes >/dev/null 2>&1
+assert_rc "lim1 eliminada sin errores" "$?" 0
 
 # ── Resumen ─────────────────────────────────────────────────
 echo

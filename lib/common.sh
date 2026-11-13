@@ -41,6 +41,7 @@ DIAS_DEFECTO=30
 GB_DEFECTO=0
 CONEXIONES_DEFECTO=0
 BLOQUEAR_AL_EXCEDER=1
+CORTAR_EXCESO_CONEXIONES=1
 SHELL_USUARIO=/bin/bash
 PUERTO_SSH=""
 IP_PUBLICA=""
@@ -58,6 +59,7 @@ movi_config_load() {
             GB_DEFECTO)           [[ "$valor" =~ ^[0-9]+([.,][0-9]+)?$ ]] && GB_DEFECTO="$valor" ;;
             CONEXIONES_DEFECTO)   [[ "$valor" =~ ^[0-9]+$ ]] && CONEXIONES_DEFECTO="$valor" ;;
             BLOQUEAR_AL_EXCEDER)  BLOQUEAR_AL_EXCEDER="$valor" ;;
+            CORTAR_EXCESO_CONEXIONES) CORTAR_EXCESO_CONEXIONES="$valor" ;;
             SHELL_USUARIO)        [[ -n "$valor" ]] && SHELL_USUARIO="$valor" ;;
             PUERTO_SSH)           PUERTO_SSH="$valor" ;;
             IP_PUBLICA)           IP_PUBLICA="$valor" ;;

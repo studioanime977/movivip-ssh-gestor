@@ -353,6 +353,7 @@ movi_menu_estado() {
         printf '  Última muestra : sin datos\n'
     fi
     printf '  Bloqueo auto   : %s\n' "$BLOQUEAR_AL_EXCEDER"
+    printf '  Corte conexiones: %s\n' "$CORTAR_EXCESO_CONEXIONES"
 }
 
 # ── Menú principal ──────────────────────────────────────────
