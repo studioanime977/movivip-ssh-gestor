@@ -186,6 +186,18 @@ def tcp_rows(text, listening=False):
 
 
 # ── Parseo de ps ───────────────────────────────────────────
+def ps_map(text):
+    """Devuelve {pid: (parent, account, command, args)} de la salida de ps."""
+    result = {}
+    for row in text.splitlines():
+        fields = row.split(None, 4)
+        if len(fields) != 5:
+            continue
+        pid, parent, account, command, args = fields
+        result[pid] = (parent, account, command, args)
+    return result
+
+
 def _cuenta_propia(account):
     return bool(USERNAME.fullmatch(account)) and account not in SYSTEM_ACCOUNTS
 
@@ -210,14 +222,9 @@ def _primero_debajo(pid, own_account, result, children):
 
 def processes(text):
     """Devuelve {pid: usuario} para procesos de sesión sshd y dropbear."""
-    result = {}
+    result = ps_map(text)
     users = {}
-    for row in text.splitlines():
-        fields = row.split(None, 4)
-        if len(fields) != 5:
-            continue
-        pid, parent, account, command, args = fields
-        result[pid] = (parent, account, command, args)
+    for pid, (parent, account, command, args) in result.items():
         if command not in SSHD or account in {"root", "sshd", "nobody"}:
             continue
         title = re.fullmatch(r"sshd(?:-session)?:\s+([^@ ]+)(?:@[^ ]+)?(?:\s+.*)?", args)
@@ -276,9 +283,9 @@ def ss_table(kind, args):
     return run(argv)
 
 
-def attributed(args):
+def attributed(args, ps_text=None):
     """Filas (cookie, usuario, [pid_dueño], bytes) de la muestra actual."""
-    users = processes(ps_table(args))
+    users = processes(ps_table(args) if ps_text is None else ps_text)
     connections = list(tcp_rows(ss_table("est", args)))
     listening = list(tcp_rows(ss_table("listen", args), listening=True))
     ssh_ports = {c.local[1] for c in listening if any(n in DAEMONS for n, _, _ in c.owners)} or {22}
@@ -497,12 +504,13 @@ def enforce(totals):
     return actions
 
 
-def cut_connections(active):
+def cut_connections(active, ps_text=None):
     """Termina las conexiones que superan el límite simultáneo.
 
     `active` es {usuario: [(pid, cookie), ...]} — un pid = una conexión. Se
     conservan las más antiguas (menor pid dentro de un arranque; desempate por
-    la última muestra guardada del socket) y el resto recibe SIGTERM.
+    la última muestra guardada del socket) y el resto recibe SIGTERM junto con
+    todo su árbol de procesos (shell y comandos de la sesión).
     """
     if not connections_enabled():
         return []
@@ -510,6 +518,10 @@ def cut_connections(active):
     if not conn_limits:
         return []
     sockets = load_state().get("sockets") or {}
+    procs = ps_map(ps_text) if ps_text else {}
+    children = {}
+    for child, (parent, _account, _command, _args) in procs.items():
+        children.setdefault(parent, []).append(child)
     actions = []
     for name in sorted(active):
         limit = conn_limits.get(name, 0)
@@ -527,8 +539,26 @@ def cut_connections(active):
             return (float(seen), int(pid))
 
         for pid, _cookie in sorted(entries, key=age)[limit:]:
-            rc, _ = exec_cmd(["kill", "-TERM", str(pid)])
-            actions.append(("cortada" if rc == 0 else "corte_fallido", name, len(entries), limit))
+            # Árbol de la sesión: descendientes primero, luego el líder.
+            order = []
+            stack = [str(pid)]
+            seen = set()
+            while stack:
+                current = stack.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                order.append(current)
+                if current in procs:
+                    stack.extend(children.get(current, []))
+            killed = 0
+            for target in reversed(order):
+                rc, _ = exec_cmd(["kill", "-TERM", target])
+                killed += 1 if rc == 0 else 0
+            if killed:
+                actions.append(("cortada", name, len(entries), limit))
+            else:
+                actions.append(("corte_fallido", name, len(entries), limit))
     return actions
 
 
@@ -545,11 +575,12 @@ def human(number):
 
 
 def cmd_collect(args, do_enforce=True):
-    rows = attributed(args)
+    ps_text = ps_table(args)
+    rows = attributed(args, ps_text=ps_text)
     totals = accumulate(meters_from(rows))
     actions = []
     if do_enforce:
-        actions = enforce(totals) + cut_connections(sessions_from(rows))
+        actions = enforce(totals) + cut_connections(sessions_from(rows), ps_text=ps_text)
     for action, name, used, limit in actions:
         print(f"{action}|{name}|{used}|{limit}")
     return 0
@@ -641,7 +672,9 @@ def main(argv=None):
     if args.collect:
         return cmd_collect(args, do_enforce=not args.no_enforce)
     if args.enforce:
-        actions = enforce(usage_map()) + cut_connections(sessions(args))
+        ps_text = ps_table(args)
+        rows = attributed(args, ps_text=ps_text)
+        actions = enforce(usage_map()) + cut_connections(sessions_from(rows), ps_text=ps_text)
         for action, name, used, limit in actions:
             print(f"{action}|{name}|{used}|{limit}")
         return 0

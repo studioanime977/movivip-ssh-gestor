@@ -526,11 +526,13 @@ cat > "$TMP/ps.txt" <<'EOF'
 100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
 500 100 lim1 sshd sshd: lim1@pts/0
 600 100 lim1 sshd sshd: lim1@pts/1
+601 600 lim1 sleep sleep 120
 EOF
 rm -f "$STUB_DIR/log/kill"
 salida="$(muestra 2>&1)"
 assert_contains "corte anunciado (2 activas, límite 1)" "$salida" "cortada|lim1|2|1"
 assert_contains "se corta la conexión más nueva (pid 600)" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 600"
+assert_contains "se corta también el árbol (hijo 601)" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 601"
 assert_not_contains "se conserva la más antigua (pid 500)" "$(cat "$STUB_DIR/log/kill" 2>/dev/null)" "kill -TERM 500"
 
 # --enforce solo también corta.
