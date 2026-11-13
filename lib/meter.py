@@ -16,8 +16,13 @@ Uso:
     meter.py --status               Resumen clave=valor del estado
 
 Las sesiones se reconocen vía sshd (puerto 22) y vía dropbear (puerto 90,
-tunnel del panel MoviVIP). Con CORTAR_EXCESO_CONEXIONES=1 se terminan las
-conexiones que superen el límite simultáneo del usuario.
+tunnel del panel MoviVIP, también los accesos por los puertos 80 y 8443 que
+terminan en él). Con CORTAR_EXCESO_CONEXIONES=1 se terminan las conexiones que
+superen el límite simultáneo del usuario.
+
+Sesiones sin shell (apps de VPN que abren canales de reenvío con `ssh -N`):
+dropbear no hereda la cuenta en su proceso de sesión, así que se recurre al
+registro de autenticación (pid → usuario) de /var/log/auth.log.
 
 Para pruebas o depuración se puede alimentar la entrada con archivos:
     --ss-file FILE --listen-file FILE --ps-file FILE
@@ -49,6 +54,9 @@ OWNER = re.compile(r'\("([^"]+)",pid=(\d+),fd=(\d+)\)')
 COOKIE = re.compile(r"\bsk:([0-9a-f]+)\b")
 NUMBERS = re.compile(r"\b(bytes_acked|bytes_received):(\d+)\b")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+# syslog: "dropbear[402757]: Password auth succeeded for 'esteban' from ..."
+AUTH_USER = re.compile(r"\bdropbear\[(\d+)\]:\s+.*\bauth succeeded for\s+'([^']+)'")
+AUTH_TAIL = 8 * 1024 * 1024  # ventana leída del registro de autenticación
 KEEP = 86400  # conservar cookies vistos en el último día
 
 
@@ -80,6 +88,7 @@ LIMITS = ETC / "limites_consumo.conf"
 CONNS = ETC / "limites_conexiones.conf"
 SUSPEND = ETC / "suspendidos.conf"
 CONFIG = ETC / "config.conf"
+AUTH_LOG = _env("MOVI_AUTH_LOG", "/var/log/auth.log")
 
 
 @dataclass(frozen=True)
@@ -241,6 +250,7 @@ def processes(text):
     children = {}
     for pid, (parent, _account, _command, _args) in result.items():
         children.setdefault(parent, []).append(pid)
+    pendientes = []
     for pid, (parent, account, command, _args) in result.items():
         if command not in DROPBEAR:
             continue
@@ -249,7 +259,52 @@ def processes(text):
         name = _primero_debajo(pid, account, result, children)
         if name:
             users[pid] = name
+        else:
+            pendientes.append(pid)
+    if pendientes:
+        # Sesión sin shell: VPN con reenvío de puertos (ssh -N) u otra app que
+        # no ejecuta comandos remotos. El usuario está en el auth log.
+        users.update(auth_sessions(pendientes))
     return users
+
+
+def _auth_tail(path):
+    """Últimos AUTH_TAIL bytes del registro de autenticación ('' si falta)."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - AUTH_TAIL))
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def auth_sessions(pids):
+    """pid → usuario de sesiones dropbear sin shell, según el auth log.
+
+    El proceso de sesión dropbear no hereda la cuenta (se queda en root), así
+    que sin shell no hay forma de saber a quién pertenece por `ps`. Syslog sí
+    guarda el pid exacto junto a la cuenta autenticada. Solo se consulta el
+    registro cuando hace falta, limitando la lectura a los pid pedidos, y se
+    ignora cualquier cuenta que no exista en el passwd.
+    """
+    wanted = {str(pid) for pid in pids}
+    if not wanted:
+        return {}
+    known = known_users()
+    found = {}
+    for path in (AUTH_LOG, AUTH_LOG + ".1"):
+        for line in _auth_tail(path).splitlines():
+            match = AUTH_USER.search(line)
+            if not match:
+                continue
+            pid, name = match.group(1), match.group(2)
+            if pid in wanted and USERNAME.fullmatch(name) and name in known:
+                found[pid] = name  # la última línea del pid manda
+        if wanted <= set(found):
+            break
+    # Los pid se mantienen como texto, igual que en las tablas de ps.
+    return found
 
 
 def ps_table(args):

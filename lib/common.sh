@@ -18,7 +18,7 @@ MOVI_SHADOW="${MOVI_SHADOW:-/etc/shadow}"
 MOVI_PYTHON="${MOVI_PYTHON:-python3}"
 MOVI_CONFIG="$MOVI_ETC/config.conf"
 MOVI_VERSION="$(cat "$MOVI_HOME/VERSION" 2>/dev/null | head -n1 | tr -d '[:space:]')"
-[[ -n "$MOVI_VERSION" ]] || MOVI_VERSION="1.0.0"
+[[ -n "$MOVI_VERSION" ]] || MOVI_VERSION="1.1.0"
 
 # ── Colores (se apagan si no hay terminal o MOVI_NO_COLOR=1) ─
 if [[ -t 1 && "${MOVI_NO_COLOR:-0}" != "1" ]]; then

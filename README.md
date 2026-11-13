@@ -8,7 +8,7 @@ movi
 
 No depende del panel MoviVIP: usa su propia base de datos y su propio medidor.
 
-El medidor reconoce las sesiones por **sshd (puerto 22)** y también por **dropbear (puerto 90)**, así que factura también las conexiones que entran por el panel MoviVIP. Si un usuario supera su límite de conexiones simultáneas (`--conns`), se cortan las más recientes (configurable con `CORTAR_EXCESO_CONEXIONES=1` en `config.conf`).
+El medidor reconoce las sesiones por **sshd (puerto 22)** y también por **dropbear (puerto 90)**, así que factura también las conexiones que entran por el panel MoviVIP y las que entran por los puertos **80** y **8443** (los dos terminan en dropbear). Cuenta incluso las apps de VPN que abren canales de reenvío **sin shell** (`ssh -N`), tomando el usuario del registro de autenticación del sistema. Si un usuario supera su límite de conexiones simultáneas (`--conns`), se cortan las más recientes (configurable con `CORTAR_EXCESO_CONEXIONES=1` en `config.conf`).
 
 ---
 

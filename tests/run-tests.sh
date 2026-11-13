@@ -45,6 +45,7 @@ export MOVI_ETC="$TMP/etc"
 export MOVI_STATE="$TMP/state"
 export MOVI_PASSWD="$TMP/passwd"
 export MOVI_SHADOW="$TMP/shadow"
+export MOVI_AUTH_LOG="$TMP/auth.log"
 export STUB_DIR="$TMP/stub"
 export PATH="$TMP/bin:$PATH"
 
@@ -263,7 +264,7 @@ assert_contains "instalador define corte de conexiones" "$(cat "$SRC/install.sh"
 echo
 echo "2) Comandos básicos"
 salida="$(M version 2>&1)"
-assert_contains "movi version" "$salida" "movi 1.0.0"
+assert_contains "movi version" "$salida" "movi 1.1.0"
 salida="$(M help 2>&1)"
 assert_contains "movi help" "$salida" "USO"
 assert_contains "movi help muestra add" "$salida" "movi add"
@@ -420,7 +421,7 @@ assert_file "comando movi instalado" "$TMP/bin-inst/movi"
 assert_file "desinstalador instalado" "$TMP/opt/uninstall.sh"
 assert_file "configuración creada" "$TMP/etc-inst/config.conf"
 salida="$("$TMP/bin-inst/movi" version 2>&1)"
-assert_contains "comando instalado responde" "$salida" "movi 1.0.0"
+assert_contains "comando instalado responde" "$salida" "movi 1.1.0"
 "$TMP/bin-inst/movi" add instalado --pass 'Clave123!' --days 5 --gb 10 >/dev/null 2>&1
 assert_rc "comando instalado crea usuario" "$?" 0
 
@@ -576,6 +577,66 @@ M del drop1 --yes >/dev/null 2>&1
 assert_rc "drop1 eliminada sin errores" "$?" 0
 M del lim1 --yes >/dev/null 2>&1
 assert_rc "lim1 eliminada sin errores" "$?" 0
+
+# ── 15. Sesiones dropbear sin shell (VPN con reenvío) ───────
+echo
+echo "15) Sesión sin shell: atribución por el auth log"
+M add vpn1 --pass 'Clave123!' --days 30 --gb 0 --conns 0 >/dev/null 2>&1
+assert_rc "vpn1 creada" "$?" 0
+# La app del cliente abre canales de reenvío sin ejecutar nada en remoto: el
+# hijo de dropbear no tiene descendientes con cuenta propia, y syslog es la
+# única fuente que guarda el pid junto a la cuenta autenticada.
+cat > "$TMP/auth.log" <<'EOF'
+Nov 13 17:00:10 phoenix dropbear[403111]: Child connection from 127.0.0.1:48001
+Nov 13 17:00:49 phoenix dropbear[402757]: Password auth succeeded for 'vpn1' from 127.0.0.1:55764
+Nov 13 17:01:02 phoenix dropbear[402838]: Password auth succeeded for 'fantasma' from 127.0.0.1:48396
+EOF
+cat > "$TMP/ss_listen.txt" <<'EOF'
+LISTEN 0 1000 0.0.0.0:90 0.0.0.0:* users:(("dropbear",pid=10687,fd=3))
+LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=100,fd=3))
+EOF
+cat > "$TMP/ss_est.txt" <<'EOF'
+0 0 127.0.0.1:90 127.0.0.1:55764 users:(("dropbear",pid=402757,fd=6)) ino:9 sk:d1d1a1
+	 ts sack cubic bytes_acked:7000 bytes_received:2000
+0 0 127.0.0.1:90 127.0.0.1:48396 users:(("dropbear",pid=402838,fd=6)) ino:10 sk:d2d2b2
+	 ts sack cubic bytes_acked:5000 bytes_received:5000
+EOF
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+10687 1 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402757 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402838 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+EOF
+muestra >/dev/null 2>&1
+assert_eq "sin shell: bytes medidos por el auth log" "$(MET --usage-bytes vpn1)" "9000"
+salida="$(MET --online --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_eq "sin shell: online la sesión autenticada" "$salida" "vpn1|1"
+assert_not_contains "cuenta inexistente: sin atribuir" "$salida" "fantasma"
+
+# Con shell, la atribución normal sigue teniendo prioridad.
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+10687 1 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402757 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402758 402757 vpn1 bash -bash
+402838 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+EOF
+salida="$(MET --online --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_eq "con shell: sigue midiendo lo mismo" "$salida" "vpn1|1"
+
+# Sin registro de autenticación no se inventa nada.
+cat > "$TMP/ps.txt" <<'EOF'
+100 1 root sshd sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+10687 1 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402757 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+402838 10687 root dropbear /usr/sbin/dropbear -p 90 -W 65536
+EOF
+rm -f "$TMP/auth.log"
+salida="$(MET --online --ss-file "$TMP/ss_est.txt" --listen-file "$TMP/ss_listen.txt" --ps-file "$TMP/ps.txt")"
+assert_eq "auth log ausente: sin atribución" "$salida" ""
+
+M del vpn1 --yes >/dev/null 2>&1
+assert_rc "vpn1 eliminada sin errores" "$?" 0
 
 # ── Resumen ─────────────────────────────────────────────────
 echo
