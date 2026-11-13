@@ -638,6 +638,34 @@ assert_eq "auth log ausente: sin atribución" "$salida" ""
 M del vpn1 --yes >/dev/null 2>&1
 assert_rc "vpn1 eliminada sin errores" "$?" 0
 
+# ── 16. Instalación desde una sola línea ────────────────────
+echo
+echo "16) Instalador suelto (curl install.sh)"
+mkdir -p "$TMP/solo"
+cp "$SRC/install.sh" "$TMP/solo/install.sh"
+tar --exclude=.git -czf "$TMP/pkg.tar.gz" -C "$(dirname "$SRC")" "$(basename "$SRC")"
+cat > "$TMP/bin/curl" <<'STUB'
+#!/bin/bash
+salida=""
+while (( $# )); do
+    case "$1" in
+        -o) salida="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[[ -n "$salida" ]] && cp "$PAQUETE_TAR" "$salida"
+exit 0
+STUB
+chmod +x "$TMP/bin/curl"
+PAQUETE_TAR="$TMP/pkg.tar.gz" bash "$TMP/solo/install.sh" \
+    --prefix "$TMP/opt-solo" --bindir "$TMP/bin-solo" --etc "$TMP/etc-solo" \
+    --state "$TMP/state-solo" --no-systemd --no-desktop >"$TMP/solo.log" 2>&1
+assert_rc "instalador sin archivos al lado: rc=0" "$?" 0
+assert_contains "avisa de que descarga el paquete" "$(cat "$TMP/solo.log")" "paquete completo"
+assert_file "termina instalando el medidor" "$TMP/opt-solo/lib/meter.py"
+assert_file "y el comando movi" "$TMP/bin-solo/movi"
+rm -f "$TMP/bin/curl"
+
 # ── Resumen ─────────────────────────────────────────────────
 echo
 echo "═══════════════════════════════════════════════════════════════"

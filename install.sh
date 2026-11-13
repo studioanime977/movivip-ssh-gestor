@@ -41,6 +41,34 @@ while (( $# )); do
     esac
 done
 
+# ── Instalación desde una sola línea ────────────────────────
+# El README permite descargar solo este archivo (curl install.sh) o pasarle el
+# contenido por tubería; en ese caso faltan lib/, movi y VERSION, así que el
+# instalador se trae el paquete completo antes de continuar.
+if [[ ! -f "$SRC/lib/meter.py" ]]; then
+    PAQUETE="https://github.com/studioanime977/movivip-ssh-gestor/archive/refs/heads/main.tar.gz"
+    echo
+    echo "⚠  Solo se descargó el instalador; se obtiene el paquete completo..."
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$tmp/paquete.tar.gz" "$PAQUETE"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$tmp/paquete.tar.gz" "$PAQUETE"
+    else
+        echo "✖ Hacen falta curl o wget para descargar el paquete." >&2
+        exit 1
+    fi
+    tar -xzf "$tmp/paquete.tar.gz" -C "$tmp"
+    for ruta in "$tmp"/*/; do
+        if [[ -f "$ruta/lib/meter.py" ]]; then SRC="${ruta%/}"; break; fi
+    done
+    if [[ -z "${SRC:-}" || ! -f "$SRC/lib/meter.py" ]]; then
+        echo "✖ No se pudo obtener el paquete completo." >&2
+        exit 1
+    fi
+fi
+
 echo
 echo "MOVIVIP · GESTOR SSH — instalador"
 echo "──────────────────────────────────────────────"
