@@ -1,0 +1,13 @@
+# Artefactos de Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Archivos locales / respaldos
+*.swp
+*~
+.DS_Store
+
+# Estado y configuración locales (nunca van al repo)
+/etc/
+/state/

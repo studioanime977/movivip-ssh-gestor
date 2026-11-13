@@ -217,21 +217,35 @@ movi_expira_epoch() {
     echo "$e"
 }
 
+# Motivo por el que movi suspendió una cuenta (vacío si movi no la tocó).
+movi_motivo_suspension() {
+    local f="$MOVI_ETC/suspendidos.conf"
+    [[ -r "$f" ]] || return 0
+    awk -F'|' -v u="$1" '$1==u { print $3; exit }' "$f"
+}
+
 movi_estado_cuenta() {
     local u="$1" exp="${2:-}"
-    local pw
+    local pw motivo
     pw="$(LC_ALL=C passwd -S "$u" 2>/dev/null | awk '{ print $2 }')"
-    if [[ "$pw" == "L" ]]; then
-        echo "BLOQUEADO"
+    if [[ "$pw" == L* ]]; then
+        # Distingue el bloqueo de movi del que ya traía la cuenta del sistema
+        # (nube/cuentas de llave: contraseña `!` o `!!` en shadow).
+        motivo="$(movi_motivo_suspension "$u")"
+        case "$motivo" in
+            consumo) printf '%s' "BLOQUEADO (límite)" ;;
+            manual)  printf '%s' "BLOQUEADO" ;;
+            *)       printf '%s' "CLAVE BLOQUEADA" ;;
+        esac
         return 0
     fi
     local e
     e="$(movi_expira_epoch "$exp")"
     if [[ "$e" != "-1" && "$e" -lt "$(date +%s)" ]]; then
-        echo "EXPIRADO"
+        printf '%s' "EXPIRADO"
         return 0
     fi
-    echo "ACTIVO"
+    printf '%s' "ACTIVO"
 }
 
 # ── Servidor ────────────────────────────────────────────────

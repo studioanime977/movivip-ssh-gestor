@@ -25,7 +25,7 @@ El instalador:
 - crea el comando `/usr/local/bin/movi`
 - crea la configuración en `/etc/movi-ssh/config.conf`
 - guarda el estado del medidor en `/var/lib/movi-ssh`
-- instala y activa `movi-meter.timer` (una muestra cada 60 segundos)
+- instala y activa `movi-meter.timer` (una muestra cada 15 segundos)
 - añade el acceso directo “MOVIVIP Gestor SSH” al menú de aplicaciones y al
   escritorio
 
@@ -92,7 +92,7 @@ Opciones de `add` / `edit`:
 
 ## 3. Cómo se mide el consumo
 
-El medidor (`lib/meter.py`) corre cada minuto desde systemd y:
+El medidor (`lib/meter.py`) corre cada 15 segundos desde systemd y:
 
 1. Lee los sockets SSH establecidos con `ss -i` y sus contadores
    `bytes_acked` + `bytes_received`.
@@ -105,6 +105,19 @@ El medidor (`lib/meter.py`) corre cada minuto desde systemd y:
 Con `BLOQUEAR_AL_EXCEDER=1` (valor por defecto), cuando una cuenta alcanza su
 límite se bloquea automáticamente (`passwd -l`) y se desbloquea sola si el
 límite se amplía o el contador se reinicia.
+
+Estados que muestra la lista:
+
+| Estado | Significado |
+|---|---|
+| `ACTIVO` | cuenta usable y dentro de su vigencia |
+| `EXPIRADO` | superó sus días de vigencia (`chage`) |
+| `BLOQUEADO (límite)` | lo bloqueó movi por superar los GB |
+| `BLOQUEADO` | lo bloqueaste con `movi block` |
+| `CLAVE BLOQUEADA` | contraseña bloqueada por el sistema (cuentas de llave/nube); movi no la toca |
+
+Muestrear cada 15 s acota lo que se pierde entre la última muestra y el cierre
+de la sesión; el coste es ~190 ms de CPU por corrida.
 
 Comandos internos del medidor (útiles para depurar):
 

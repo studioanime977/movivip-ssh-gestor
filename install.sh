@@ -156,7 +156,7 @@ install -d -m 755 "$BINDIR"
 ln -sfn "$PREFIX/movi" "$BINDIR/movi"
 echo "✔ Comando instalado: $BINDIR/movi"
 
-# ── systemd: medidor cada minuto ────────────────────────────
+# ── systemd: medidor cada 15 segundos ───────────────────────
 if [[ "$SKIP_SYSTEMD" == "1" ]]; then
     echo "↷ systemd omitido (--no-systemd)."
 elif command -v systemctl >/dev/null 2>&1; then
@@ -177,12 +177,12 @@ UNIT
 
     cat > "$UNIT_DIR/movi-meter.timer" <<'UNIT'
 [Unit]
-Description=MOVIVIP Gestor SSH - muestra de consumo cada minuto
+Description=MOVIVIP Gestor SSH - muestra de consumo cada 15 segundos
 
 [Timer]
-OnBootSec=30s
-OnUnitActiveSec=60s
-AccuracySec=5s
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=2s
 Unit=movi-meter.service
 
 [Install]
@@ -192,10 +192,11 @@ UNIT
     systemctl daemon-reload
     systemctl enable --now movi-meter.timer >/dev/null 2>&1 || true
     systemctl start movi-meter.service >/dev/null 2>&1 || true
-    echo "✔ Medidor instalado y activo (movi-meter.timer, cada 60 s)"
+    echo "✔ Medidor instalado y activo (movi-meter.timer, cada 15 s)"
 else
     echo "⚠ systemd no disponible: el medidor no se programó automáticamente."
     echo "  Añada a cron:  * * * * * python3 $PREFIX/lib/meter.py --collect"
+    echo "  (cron no admite segundos: cada minuto es lo más fino posible)"
 fi
 
 # ── Lanzador de escritorio ──────────────────────────────────

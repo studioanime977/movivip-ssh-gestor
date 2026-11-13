@@ -248,6 +248,8 @@ for f in "$SRC/movi" "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC"/lib/*.sh "$SRC
     if bash -n "$f" 2>/dev/null; then ok "bash -n $(basename "$f")"; else bad "bash -n $f"; fi
 done
 if "$MOVI_PYTHON" -m py_compile "$SRC/lib/meter.py" 2>/dev/null; then ok "python compila"; else bad "python compila"; fi
+assert_contains "medidor cada 15 s en el instalador" "$(cat "$SRC/install.sh")" "OnUnitActiveSec=15s"
+assert_not_contains "sin restos del antiguo intervalo de 60 s" "$(cat "$SRC/install.sh")" "OnUnitActiveSec=60s"
 
 # ── 2. Comandos básicos ─────────────────────────────────────
 echo
@@ -338,6 +340,13 @@ assert_file "bloqueado al superar límite" "$STUB_DIR/locked/test1"
 assert_contains "motivo registrado" "$(cat "$MOVI_ETC/suspendidos.conf")" "test1|"
 salida="$(M list 2>&1)"
 assert_contains "lista muestra BLOQUEADO" "$salida" "BLOQUEADO"
+assert_contains "lista indica el motivo (límite)" "$salida" "BLOQUEADO (límite)"
+
+# Una cuenta bloqueada por el sistema (sin registro de movi) se distingue:
+touch "$STUB_DIR/locked/test3"
+salida="$(M list 2>&1)"
+assert_contains "bloqueo del sistema se distingue" "$salida" "CLAVE BLOQUEADA"
+rm -f "$STUB_DIR/locked/test3"
 
 printf 'test1=0\n' > "$MOVI_ETC/limites_consumo.conf"
 MET --enforce >/dev/null 2>&1
@@ -355,6 +364,8 @@ assert_eq "nuevo límite conexiones" "$(awk -F= '$1=="test1"{print $2}' "$MOVI_E
 
 M block test1 >/dev/null 2>&1
 assert_file "block bloquea" "$STUB_DIR/locked/test1"
+assert_contains "bloqueo manual se registra" "$(M list 2>&1)" "BLOQUEADO"
+assert_not_contains "bloqueo manual no lleva el motivo de límite" "$(M list 2>&1)" "(límite)"
 M unblock test1 >/dev/null 2>&1
 assert_no_file "unblock desbloquea" "$STUB_DIR/locked/test1"
 

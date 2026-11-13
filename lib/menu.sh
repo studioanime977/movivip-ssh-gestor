@@ -225,7 +225,7 @@ movi_wizard_editar() {
                 movi_pausa
                 ;;
             5)
-                if [[ "$estado" == "BLOQUEADO" ]]; then
+                if [[ "$estado" == BLOQUEADO* ]]; then
                     movi_desbloquear_usuario "$u" && movi_ok "Usuario desbloqueado."
                 else
                     movi_bloquear_usuario "$u" manual && movi_ok "Usuario bloqueado."

@@ -41,7 +41,7 @@ EJEMPLOS
   movi reset juan
   movi del juan --yes
 
-El medidor corre cada minuto por systemd y acumula el tráfico de cada
+El medidor corre cada 15 segundos por systemd y acumula el tráfico de cada
 sesión SSH. Si BLOQUEAR_AL_EXCEDER=1 (config.conf), la cuenta se bloquea
 automáticamente al alcanzar su límite y se desbloquea al ampliarlo.
 AYUDA
